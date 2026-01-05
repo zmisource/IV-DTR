@@ -426,7 +426,7 @@ val_quan <- function(data, d, tau){
   return(V_quan_hat(d, tau))
 }
 
-data <- read_excel("~/project/dtr/simulation/real data/results/0101开通营销活动比例_1.xlsx", sheet = 1, col_names = TRUE)
+data <- read_excel("/Users/zzzsy/project/dtr/simulation/simulation_final/data/0101开通营销活动比例_1.xlsx", sheet = 1, col_names = TRUE)
 data <- data[,-1]
 
 data <- subset(data,
@@ -437,6 +437,7 @@ data <- subset(data,
 
 k <- 123
 set.seed(k)
+pop.size <- 3000
 data <- subset(data, `三级行业类别` %in% c("小吃", "米线/米粉", "炒菜","麻辣烫"))
 data <- transformed_data(data)
 
@@ -451,3 +452,120 @@ test_data <- data[-train_indices, ]
 out <- mean_policy(train_data,print.level=0, pop.size=3000, wait.generations=8, domains=10)
 set.seed(k)
 out_0.5 <- quan_policy(train_data,tau = 0.5,print.level=0, pop.size=3000, wait.generations=8, domains=10)
+
+library(quantreg)
+library(quantoptr)
+
+get_data <- function(data){
+  # data <- transformed_data(data)
+  # label <- data$label
+  L1 <- data$L1
+  A1 <- data$A1
+  R1 <- data$R1
+  L2 <- data$L2
+  A2 <- data$A2
+  R2 <- data$R2
+  R <- R1 + R2
+  return(data.frame(x1 = I(L1), a1 = A1, y1 = R1, x2 = I(L2), a2 = A2, y2 = R2, y = R))
+}
+train_data_qtr <- get_data(train_data)
+s.tol <- diff(range(train_data_qtr$y))*1e-03
+set.seed(k)
+
+out1<- TwoStg_Mopt(data = train_data_qtr, regimeClass.stg1 = a1 ~ x1, regimeClass.stg2 = a2 ~ x1+a1 + y1 + x2,
+                   moPropen1 = a1 ~ x1, moPropen2 = a2 ~ x1+a1 + y1 + x2,
+                   p_level = 0,
+                   cl.setup = 1, pop.size = pop.size, it.num = 8, s.tol = s.tol)
+
+out1_0.5<- TwoStg_Qopt(data = train_data_qtr,tau=0.5, regimeClass.stg1 = a1 ~ x1, regimeClass.stg2 = a2 ~ x1+a1 + y1 + x2,
+                       moPropen1 = a1 ~ x1, moPropen2 = a2 ~ x1+a1 + y1 + x2,
+                       p_level = 0,
+                       cl.setup = 1, pop.size = pop.size, it.num = 8, s.tol = s.tol)
+library(DynTxRegime)
+get_iq_data <- function(data){
+  # data <- transformed_data(data)
+  # label <- data$label
+  L1 <- data$L1
+  A1 <- data$A1
+  R1 <- data$R1
+  L2 <- data$L2
+  A2 <- data$A2
+  R2 <- data$R2
+  R <- R1 + R2
+  return(data.frame(X1 = I(L1), A1 = A1, Y1 = R1, X2 = I(L2), A2 = A2, Y2 = R2, Y = R))
+}
+
+train_data_iq <- get_iq_data(train_data)
+
+moMain <- buildModelObj(model = ~X1+A1+ Y1 + X2,
+                        solver.method = 'lm')
+
+moCont <- buildModelObj(model = ~X1+A1+ Y1 + X2,
+                        solver.method = 'lm')
+
+fitSS <- iqLearnSS(moMain = moMain, moCont = moCont,
+                   data = train_data_iq, response =train_data_iq$Y,  txName = 'A2')
+
+# main effects model
+moMain <- buildModelObj(model = ~X1,
+                        solver.method = 'lm')
+
+moCont <- buildModelObj(model = ~X1,
+                        solver.method = 'lm')
+
+fitFSC <- iqLearnFSM(moMain = moMain, moCont = moCont,
+                     data = train_data_iq, response = fitSS,  txName = 'A1')
+
+d_iq <- c(coef(object = fitFSC)$outcome$Combined[4:6], coef(object = fitSS)$outcome$Combined[8:14])
+
+library(ITRSelect)
+
+train_data_itr <- get_data(train_data)
+X1 <- train_data_itr$x1
+A1 <- train_data_itr$a1
+Y1 <- train_data_itr$y1
+X2 <- train_data_itr$x2
+A2 <- train_data_itr$a2
+Y <- train_data_itr$y
+
+result <- PAL(Y~X1|A1|Y1 + X2|A2, , lambda.list = seq(0.1,1.1,0.1))
+
+
+d_pal <- c(result$beta1.est, result$beta2.est)
+d_iv <- c(out$coef.orgn.scale.1, out$coef.orgn.scale.2)
+d_qtr <- c(out1$coef.orgn.scale.1, out1$coef.orgn.scale.2)
+d_quan_iv <- c(out_0.5$coef.orgn.scale.1, out_0.5$coef.orgn.scale.2)
+d_quan_qtr <- c(out1_0.5$coef.orgn.scale.1, out1_0.5$coef.orgn.scale.2)
+
+tau <- 0.5
+# 定义保留小数位数的参数
+decimal_places <- 4  # 可以调整此值
+
+# 动态生成格式字符串
+format_string <- paste0("%.", decimal_places, "f")
+
+# 计算 val_mean 结果，并格式化
+mean_results <- paste(
+  sprintf(format_string, val_mean(test_data, d_iv)),
+  sprintf(format_string, val_mean(test_data, d_quan_iv)),
+  sprintf(format_string, val_mean(test_data, d_qtr)),
+  sprintf(format_string, val_mean(test_data, d_quan_qtr)),
+  sprintf(format_string, val_mean(test_data, d_iq)),
+  sprintf(format_string, val_mean(test_data, d_pal)),
+  sep = " & "
+)
+
+# 计算 val_quan 结果，并格式化
+quan_results <- paste(
+  sprintf(format_string, val_quan(test_data, d_iv, tau)),
+  sprintf(format_string, val_quan(test_data, d_quan_iv, tau)),
+  sprintf(format_string, val_quan(test_data, d_qtr, tau)),
+  sprintf(format_string, val_quan(test_data, d_quan_qtr, tau)),
+  sprintf(format_string, val_quan(test_data, d_iq, tau = tau)),
+  sprintf(format_string, val_quan(test_data, d_pal, tau = tau)),
+  sep = " & "
+)
+
+# 输出结果
+cat("Mean", "&", mean_results, "\\\\", "\n")
+cat("Median", "&", quan_results, "\\\\", "\n")
